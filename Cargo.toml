@@ -1,0 +1,6 @@
+[package]
+name = "氢能走廊面板"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]

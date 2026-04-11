@@ -1,5 +1,6 @@
 /target
 /dist
+.tmp/
 crates/panel/target/
 node_modules/
 .DS_Store

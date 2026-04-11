@@ -1,12 +1,12 @@
 (function () {
   var ws = null;
-  var frameWs = null;
   var wsReady = false;
   var rpcId = 1;
   var sensorData = new Map();
-  var latestFrame = null;
+  var lastSeq = 0;
   var jsFpsFrames = 0;
   var jsFpsTick = performance.now();
+  var imageDataCache = null;
 
   var canvas = document.getElementById("bevy-canvas");
   var ctx = canvas.getContext("2d");
@@ -101,49 +101,12 @@
     };
   }
 
-  function connectFrameWs() {
-    frameWs = new WebSocket("ws://127.0.0.1:18742/frame.ws");
-    frameWs.binaryType = "arraybuffer";
-
-    frameWs.onclose = function () {
-      setTimeout(connectFrameWs, 1000);
-    };
-
-    frameWs.onerror = function () {
-      frameWs.close();
-    };
-
-    frameWs.onmessage = function (event) {
-      if (!(event.data instanceof ArrayBuffer)) {
-        return;
-      }
-      var bytes = new Uint8Array(event.data);
-      if (bytes.byteLength < 16) {
-        return;
-      }
-
-      var dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      var w = dv.getUint32(4, true);
-      var h = dv.getUint32(8, true);
-      var dataLen = dv.getUint32(12, true);
-      var payloadOffset = 16;
-      if (w === 0 || h === 0 || dataLen === 0 || payloadOffset + dataLen > bytes.byteLength) {
-        return;
-      }
-
-      latestFrame = {
-        width: w,
-        height: h,
-        rgba: new Uint8ClampedArray(bytes.buffer.slice(payloadOffset, payloadOffset + dataLen)),
-      };
-    };
-  }
-
   function fitCanvasCss() {
     var w = Math.max(1, Math.round(canvas.clientWidth));
     var h = Math.max(1, Math.round(canvas.clientHeight));
     if (window.ipc) {
-      var dpr = window.devicePixelRatio || 1;
+      // Keep transport resolution in CSS pixels to improve JS-side frame rate.
+      var dpr = 1;
       window.ipc.postMessage(JSON.stringify({ resize: { width: w, height: h, dpr: dpr } }));
     }
   }
@@ -189,17 +152,29 @@
   }
 
   function renderLoop() {
-    if (latestFrame) {
-      var w = latestFrame.width;
-      var h = latestFrame.height;
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-        resolutionEl.textContent = w + "x" + h;
+    var sab = window.__frameSab || null;
+    if (sab) {
+      var seq32 = new Int32Array(sab, 0, 1);
+      var seq = Atomics.load(seq32, 0);
+      if (seq !== lastSeq && seq > 0) {
+        lastSeq = seq;
+        var dv = new DataView(sab, 0, 20);
+        var w = dv.getUint32(4, true);
+        var h = dv.getUint32(8, true);
+        if (w > 0 && h > 0) {
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+            imageDataCache = ctx.createImageData(w, h);
+            resolutionEl.textContent = w + "x" + h;
+          }
+          if (imageDataCache && imageDataCache.data.length === w * h * 4) {
+            imageDataCache.data.set(new Uint8ClampedArray(sab, 64, w * h * 4));
+            ctx.putImageData(imageDataCache, 0, 0);
+            jsFpsFrames += 1;
+          }
+        }
       }
-      ctx.putImageData(new ImageData(latestFrame.rgba, w, h), 0, 0);
-      latestFrame = null;
-      jsFpsFrames += 1;
     }
 
     requestAnimationFrame(renderLoop);
@@ -231,7 +206,6 @@
   }
 
   connectWs();
-  connectFrameWs();
   setupResolutionToolbar();
   bindKeyboard();
   fitCanvasCss();

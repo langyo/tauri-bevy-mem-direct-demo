@@ -9,13 +9,14 @@
   var imageDataCache = null;
 
   var canvas = document.getElementById("bevy-canvas");
-  var ctx = canvas.getContext("2d");
+  // ctx will be handled by render worker via OffscreenCanvas
   var panel = document.getElementById("panel");
   var statusEl = document.getElementById("status");
   var jsFpsEl = document.getElementById("js-fps-display");
   var rendererFpsEl = document.getElementById("renderer-fps-display");
   var resolutionEl = document.getElementById("resolution-display");
   var clockEl = document.getElementById("clock-display");
+  var renderWorker = null;
 
   function setStatus(text, connected) {
     statusEl.textContent = text;
@@ -151,33 +152,76 @@
     jsFpsTick = now;
   }
 
-  function renderLoop() {
-    var sab = window.__frameSab || null;
-    if (sab) {
-      var seq32 = new Int32Array(sab, 0, 1);
-      var seq = Atomics.load(seq32, 0);
-      if (seq !== lastSeq && seq > 0) {
-        lastSeq = seq;
-        var dv = new DataView(sab, 0, 20);
-        var w = dv.getUint32(4, true);
-        var h = dv.getUint32(8, true);
-        if (w > 0 && h > 0) {
-          if (canvas.width !== w || canvas.height !== h) {
-            canvas.width = w;
-            canvas.height = h;
-            imageDataCache = ctx.createImageData(w, h);
-            resolutionEl.textContent = w + "x" + h;
-          }
-          if (imageDataCache && imageDataCache.data.length === w * h * 4) {
-            imageDataCache.data.set(new Uint8ClampedArray(sab, 64, w * h * 4));
-            ctx.putImageData(imageDataCache, 0, 0);
-            jsFpsFrames += 1;
+  function initRenderWorker() {
+    try {
+      // Request OffscreenCanvas from main thread canvas
+      var offscreenCanvas = canvas.transferControlToOffscreen();
+      
+      // Create and start render worker
+      renderWorker = new Worker("render-worker.js");
+      
+      // Handle messages from worker
+      renderWorker.onmessage = function(e) {
+        if (e.data.type === 'resolution-changed') {
+          resolutionEl.textContent = e.data.width + "x" + e.data.height;
+        } else if (e.data.type === 'fps') {
+          jsFpsEl.textContent = "JS: " + e.data.value;
+        }
+      };
+      
+      // Initialize worker with OffscreenCanvas and SAB
+      window.addEventListener('load', function checkSab() {
+        if (window.__frameSab) {
+          renderWorker.postMessage({
+            type: 'init',
+            canvas: offscreenCanvas,
+            frameBuffer: window.__frameSab
+          }, [offscreenCanvas]);
+          window.removeEventListener('load', checkSab);
+        } else {
+          setTimeout(checkSab, 50);
+        }
+      });
+      
+      // Request FPS update every 1000ms
+      setInterval(function() {
+        if (renderWorker) {
+          renderWorker.postMessage({ type: 'fps-report-request' });
+        }
+      }, 1000);
+      
+    } catch (e) {
+      console.error("Failed to initialize render worker:", e);
+      // Fallback: render on main thread if OffscreenCanvas unavailable
+      function renderLoopFallback() {
+        var sab = window.__frameSab || null;
+        if (sab) {
+          var seq32 = new Int32Array(sab, 0, 1);
+          var seq = Atomics.load(seq32, 0);
+          if (seq !== lastSeq && seq > 0) {
+            lastSeq = seq;
+            var dv = new DataView(sab, 0, 20);
+            var w = dv.getUint32(4, true);
+            var h = dv.getUint32(8, true);
+            if (w > 0 && h > 0) {
+              if (canvas.width !== w || canvas.height !== h) {
+                canvas.width = w;
+                canvas.height = h;
+                imageDataCache = canvas.getContext("2d").createImageData(w, h);
+                resolutionEl.textContent = w + "x" + h;
+              }
+              if (imageDataCache && imageDataCache.data.length === w * h * 4) {
+                imageDataCache.data.set(new Uint8ClampedArray(sab, 64, w * h * 4));
+                canvas.getContext("2d").putImageData(imageDataCache, 0, 0);
+                jsFpsFrames += 1;
+              }
+            }
           }
         }
+        requestAnimationFrame(renderLoopFallback);
       }
+      renderLoopFallback();
     }
-
-    requestAnimationFrame(renderLoop);
   }
 
   function bindKeyboard() {
@@ -212,5 +256,5 @@
   updateClock();
   setInterval(updateClock, 1000);
   setInterval(updateJsFps, 1000);
-  renderLoop();
+  initRenderWorker();
 })();

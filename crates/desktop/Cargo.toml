@@ -19,5 +19,3 @@ axum = { workspace = true }
 winit = { workspace = true }
 wry = { workspace = true }
 flume = { workspace = true }
-webview2-com = "0.35"
-windows-core = "0.59"

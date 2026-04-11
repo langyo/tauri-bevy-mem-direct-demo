@@ -5,6 +5,7 @@ members = [
     "crates/server",
     "crates/renderer",
     "crates/desktop",
+    "crates/panel",
 ]
 
 [workspace.package]
@@ -35,15 +36,3 @@ raw-window-handle = "0.6"
 
 winit = "0.30"
 wry = "0.49"
-
-tairitsu-web = { git = "https://github.com/celestia-island/tairitsu", branch = "dev" }
-tairitsu-vdom = { git = "https://github.com/celestia-island/tairitsu", branch = "dev" }
-tairitsu-hooks = { git = "https://github.com/celestia-island/tairitsu", branch = "dev" }
-tairitsu-macros = { git = "https://github.com/celestia-island/tairitsu", branch = "dev" }
-tairitsu-style = { git = "https://github.com/celestia-island/tairitsu", branch = "dev" }
-hikari-components = { git = "https://github.com/celestia-island/hikari", branch = "dev" }
-hikari-theme = { git = "https://github.com/celestia-island/hikari", branch = "dev" }
-hikari-palette = { git = "https://github.com/celestia-island/hikari", branch = "dev" }
-
-[patch.crates-io]
-wry = { path = "vendor/wry" }

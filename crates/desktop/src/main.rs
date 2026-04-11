@@ -1,28 +1,16 @@
 mod sidecar;
 
 use server::data::MockDataSource;
-use shared::event::{NamedEvent, FRAME_EVENT_NAME};
 use shared::protocol::ToRenderer;
-use shared::shm::{
-    DualControl, FrameHeader, ShmHandle, FRAME_HEADER_SIZE, SHM_MAX_SIZE, SHM_NAME,
-};
+use shared::shm::{ShmHandle, SHM_MAX_SIZE, SHM_NAME};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Environment12, ICoreWebView2SharedBuffer, ICoreWebView2_17,
-    COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_ONLY,
-};
-use windows_core::Interface;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Window, WindowId};
 use wry::dpi::{LogicalPosition, LogicalSize};
-use wry::{Rect, WebViewBuilder, WebViewExtWindows};
+use wry::{Rect, WebViewBuilder};
 use serde::Deserialize;
-
-const SHARED_HEADER_SIZE: usize = 64;
-const SHARED_BUF_SIZE: usize = SHARED_HEADER_SIZE + shared::shm::MAX_FRAME_DATA;
 
 #[derive(Deserialize)]
 struct IpcMessage {
@@ -63,22 +51,7 @@ struct App {
     _webview: Option<wry::WebView>,
     sidecar: Option<sidecar::SidecarHandle>,
     sidecar_cmd_tx: Option<flume::Sender<ToRenderer>>,
-    shm: Arc<std::sync::Mutex<ShmHandle>>,
-    sab_buffer: Option<ICoreWebView2SharedBuffer>,
-    sab_webview17: Option<ICoreWebView2_17>,
-    nav_completed: bool,
-    nav_flag: Arc<std::sync::atomic::AtomicBool>,
-    sab_posted: bool,
     render_state: Arc<std::sync::Mutex<RenderState>>,
-}
-
-impl App {
-    fn send_render_resolution(&self) {
-        let (rw, rh) = self.render_state.lock().unwrap().render_resolution();
-        if let Some(ref tx) = self.sidecar_cmd_tx {
-            let _ = tx.send(ToRenderer::SetResolution { width: rw, height: rh });
-        }
-    }
 }
 
 impl ApplicationHandler for App {
@@ -110,42 +83,14 @@ impl ApplicationHandler for App {
 
         let init_script = r#"
 (function() {
-    var HEADER_SIZE = 64;
-    var lastSeq = 0;
-    var jsFpsTickFrames = 0;
-    var jsFpsTickTime = performance.now();
-    var canvas = null;
-    var ctx = null;
-    var currentW = 0, currentH = 0;
-
-    if (typeof chrome !== 'undefined' && chrome.webview) {
-        chrome.webview.addEventListener('sharedbufferreceived', function(event) {
-            if (event.additionalData && event.additionalData.type === 'frameBuffer') {
-                var buffer = event.getBuffer();
-                if (buffer && typeof buffer.then === 'function') {
-                    buffer.then(function(b) { window.__frameSab = b; });
-                } else if (buffer) {
-                    window.__frameSab = buffer;
-                }
-            }
-        });
-    }
-
-    function ensureCanvas() {
-        if (!canvas) canvas = document.getElementById('bevy-canvas');
-        if (canvas && !ctx) ctx = canvas.getContext('2d');
-        return canvas && ctx;
-    }
-
     function reportCanvasSize() {
         var c = document.getElementById('bevy-canvas');
-        if (c && window.ipc) {
-            var w = Math.round(c.clientWidth);
-            var h = Math.round(c.clientHeight);
-            if (w > 0 && h > 0) {
-                var dpr = window.devicePixelRatio || 1;
-                window.ipc.postMessage(JSON.stringify({resize:{width:w,height:h,dpr:dpr}}));
-            }
+        if (!c || !window.ipc) return;
+        var w = Math.round(c.clientWidth);
+        var h = Math.round(c.clientHeight);
+        if (w > 0 && h > 0) {
+            var dpr = window.devicePixelRatio || 1;
+            window.ipc.postMessage(JSON.stringify({resize:{width:w,height:h,dpr:dpr}}));
         }
     }
 
@@ -156,64 +101,15 @@ impl ApplicationHandler for App {
         ro.observe(c);
         reportCanvasSize();
     }
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', observeCanvas);
     } else {
         observeCanvas();
     }
-
-    function updateJsFps() {
-        var now = performance.now();
-        var elapsed = now - jsFpsTickTime;
-        if (elapsed > 0 && jsFpsTickFrames > 0) {
-            var fps = (1000 * jsFpsTickFrames / elapsed).toFixed(1);
-            var el = document.getElementById('js-fps-display');
-            if (el) el.textContent = 'JS: ' + fps;
-        }
-        jsFpsTickFrames = 0;
-        jsFpsTickTime = now;
-    }
-    setInterval(updateJsFps, 1000);
-
-    function renderLoop() {
-        var sab = window.__frameSab || null;
-        if (sab) {
-            var seq32 = new Int32Array(sab, 0, 1);
-            var seq = Atomics.load(seq32, 0);
-            if (seq !== lastSeq && seq > 0) {
-                lastSeq = seq;
-                var dv = new DataView(sab, 0, 20);
-                var w = dv.getUint32(4, true);
-                var h = dv.getUint32(8, true);
-                if (w > 0 && h > 0) {
-                    if (ensureCanvas()) {
-                        if (canvas.width !== w || canvas.height !== h) {
-                            canvas.width = w;
-                            canvas.height = h;
-                        }
-                        var imgData = ctx.createImageData(w, h);
-                        imgData.data.set(new Uint8ClampedArray(sab, HEADER_SIZE, w * h * 4));
-                        ctx.putImageData(imgData, 0, 0);
-                        jsFpsTickFrames++;
-                    }
-                    if (w !== currentW || h !== currentH) {
-                        var el = document.getElementById('resolution-display');
-                        if (el) {
-                            el.textContent = w + '×' + h;
-                            currentW = w; currentH = h;
-                        }
-                    }
-                }
-            }
-        }
-        requestAnimationFrame(renderLoop);
-    }
-    requestAnimationFrame(renderLoop);
 })();
 "#;
 
-        let nav_completed_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let nav_flag_clone = nav_completed_flag.clone();
         let ipc_sidecar_tx = self.sidecar_cmd_tx.clone();
         let ipc_render_state = self.render_state.clone();
 
@@ -237,86 +133,15 @@ impl ApplicationHandler for App {
                     }
                 }
             })
-            .with_on_page_load_handler(move |event, _url| {
-                if matches!(event, wry::PageLoadEvent::Finished) {
-                    tracing::info!("NavigationCompleted");
-                    nav_flag_clone.store(true, Ordering::Release);
-                }
-            })
             .build(&window)
             .expect("Failed to build webview");
-
-        let env = webview.environment();
-        let controller = webview.controller();
-
-        let core_wv: ICoreWebView2 =
-            unsafe { controller.CoreWebView2() }.expect("Failed to get CoreWebView2");
-
-        let env12: ICoreWebView2Environment12 = env
-            .cast()
-            .expect("ICoreWebView2Environment12 not available");
-        let shared_buffer = unsafe { env12.CreateSharedBuffer(SHARED_BUF_SIZE as u64) }
-            .expect("Failed to create SharedBuffer");
-
-        let mut buf_ptr: *mut u8 = std::ptr::null_mut();
-        unsafe { shared_buffer.Buffer(&mut buf_ptr) }.expect("Failed to get SharedBuffer pointer");
-
-        let wv17: ICoreWebView2_17 = core_wv
-            .cast()
-            .expect("ICoreWebView2_17 not available");
-
-        spawn_frame_reader(self.shm.clone(), buf_ptr);
-
-        self.sab_buffer = Some(shared_buffer);
-        self.sab_webview17 = Some(wv17);
-        self.nav_completed = false;
-        self.nav_flag = nav_completed_flag;
-        self.sab_posted = false;
-
-        event_loop.set_control_flow(ControlFlow::Poll);
+        event_loop.set_control_flow(ControlFlow::Wait);
 
         self._window = Some(window);
         self._webview = Some(webview);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.sab_posted {
-            event_loop.set_control_flow(ControlFlow::Wait);
-            return;
-        }
-
-        if !self.nav_completed {
-            if self.nav_flag.load(Ordering::Acquire) {
-                self.nav_completed = true;
-                tracing::info!("NavigationCompleted — posting SharedBuffer");
-
-                if let (Some(ref buffer), Some(ref wv17)) =
-                    (&self.sab_buffer, &self.sab_webview17)
-                {
-                    let json_wide: Vec<u16> = r#"{"type":"frameBuffer"}"#
-                        .encode_utf16()
-                        .chain(std::iter::once(0))
-                        .collect();
-                    match unsafe {
-                        wv17.PostSharedBufferToScript(
-                            buffer,
-                            COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_ONLY,
-                            windows_core::PCWSTR(json_wide.as_ptr()),
-                        )
-                    } {
-                        Ok(()) => tracing::info!("PostSharedBufferToScript returned Ok"),
-                        Err(e) => tracing::error!("PostSharedBufferToScript failed: {:?}", e),
-                    }
-                }
-                self.sab_posted = true;
-                event_loop.set_control_flow(ControlFlow::Wait);
-            } else {
-                let next = std::time::Instant::now() + std::time::Duration::from_millis(50);
-                event_loop.set_control_flow(ControlFlow::WaitUntil(next));
-            }
-            return;
-        }
-
         event_loop.set_control_flow(ControlFlow::Wait);
     }
 
@@ -346,79 +171,6 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
-}
-
-fn spawn_frame_reader(shm: Arc<std::sync::Mutex<ShmHandle>>, buf_ptr: *mut u8) {
-    let shm_clone = shm.clone();
-    let buf_ptr_val = buf_ptr as usize;
-
-    std::thread::Builder::new()
-        .name("frame-reader".into())
-        .spawn(move || {
-            let frame_event =
-                NamedEvent::open(FRAME_EVENT_NAME).expect("Failed to open frame event");
-
-            let (shm_ptr, shm_size) = {
-                let guard = shm_clone.lock().unwrap();
-                (guard.as_ptr() as usize, guard.size())
-            };
-
-            let shm_slice =
-                unsafe { std::slice::from_raw_parts(shm_ptr as *const u8, shm_size) };
-            let shared_buf =
-                unsafe { std::slice::from_raw_parts_mut(buf_ptr_val as *mut u8, SHARED_BUF_SIZE) };
-            let ctrl = DualControl::as_bytes(shm_slice);
-            let mut last_seq: u64 = 0;
-            let mut frame_count: u64 = 0;
-
-            loop {
-                if !frame_event.wait(100) {
-                    continue;
-                }
-
-                let ready_idx = ctrl.ready_index.load(Ordering::Acquire);
-                let buf = ctrl.buffer_slice(shm_slice, ready_idx);
-                let header = FrameHeader::from_buffer(buf);
-                let seq = header.seq.load(Ordering::Acquire);
-                let w = header.width.load(Ordering::Acquire);
-                let h = header.height.load(Ordering::Acquire);
-                let data_len = header.data_len.load(Ordering::Acquire) as usize;
-
-                if seq == 0 || seq <= last_seq || w == 0 || h == 0 || data_len == 0 {
-                    continue;
-                }
-                last_seq = seq;
-
-                let end = (FRAME_HEADER_SIZE + data_len).min(buf.len());
-                let copy_len = end.saturating_sub(FRAME_HEADER_SIZE);
-
-                if copy_len > 0 && SHARED_HEADER_SIZE + copy_len <= shared_buf.len() {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            buf[FRAME_HEADER_SIZE..].as_ptr(),
-                            shared_buf[SHARED_HEADER_SIZE..].as_mut_ptr(),
-                            copy_len,
-                        );
-                    }
-
-                    let base = shared_buf.as_mut_ptr();
-                    unsafe {
-                        std::ptr::write(base.add(4) as *mut u32, w);
-                        std::ptr::write(base.add(8) as *mut u32, h);
-                        std::ptr::write(base.add(12) as *mut u32, data_len as u32);
-                    }
-
-                    frame_count += 1;
-                    std::sync::atomic::fence(Ordering::Release);
-                    unsafe {
-                        let seq_atomic =
-                            &*(base as *const std::sync::atomic::AtomicU32);
-                        seq_atomic.store(frame_count as u32, Ordering::Release);
-                    }
-                }
-            }
-        })
-        .expect("Failed to spawn frame reader thread");
 }
 
 fn find_dist_dir() -> std::path::PathBuf {
@@ -619,12 +371,6 @@ fn main() {
             _webview: None,
             sidecar: Some(sidecar_handle),
             sidecar_cmd_tx: Some(sidecar_cmd_tx_for_app),
-            shm,
-            sab_buffer: None,
-            sab_webview17: None,
-            nav_completed: false,
-            nav_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            sab_posted: false,
             render_state,
         })
         .expect("Event loop error");

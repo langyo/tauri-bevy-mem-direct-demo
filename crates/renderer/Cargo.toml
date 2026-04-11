@@ -1,0 +1,11 @@
+[package]
+name = "renderer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shared = { path = "../shared" }
+bevy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+flume = { workspace = true }

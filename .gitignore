@@ -1,1 +1,8 @@
 /target
+/dist
+crates/panel/target/
+node_modules/
+.DS_Store
+*.swp
+*.swo
+nul

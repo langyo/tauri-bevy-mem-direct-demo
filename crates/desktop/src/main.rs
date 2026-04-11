@@ -6,19 +6,28 @@ use shared::protocol::ToRenderer;
 use shared::shm::{
     DualControl, FrameHeader, ShmHandle, FRAME_HEADER_SIZE, SHM_MAX_SIZE, SHM_NAME,
 };
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use webview2_com::{
+    AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    NavigationCompletedEventHandler, WebMessageReceivedEventHandler,
+};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Environment12, ICoreWebView2SharedBuffer, ICoreWebView2_17,
+    CreateCoreWebView2Environment, ICoreWebView2, ICoreWebView2Controller,
+    ICoreWebView2Environment, ICoreWebView2Environment12, ICoreWebView2SharedBuffer,
+    ICoreWebView2WebMessageReceivedEventArgs, ICoreWebView2_17,
     COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_ONLY,
 };
+use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
+use windows::Win32::System::WinRT::EventRegistrationToken;
+use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows_core::Interface;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Window, WindowId};
-use wry::dpi::{LogicalPosition, LogicalSize};
-use wry::{Rect, WebViewBuilder, WebViewExtWindows};
 use serde::Deserialize;
 
 const SHARED_HEADER_SIZE: usize = 64;
@@ -60,7 +69,7 @@ impl RenderState {
 
 struct App {
     _window: Option<Window>,
-    _webview: Option<wry::WebView>,
+    webview_controller: Option<ICoreWebView2Controller>,
     sidecar: Option<sidecar::SidecarHandle>,
     sidecar_cmd_tx: Option<flume::Sender<ToRenderer>>,
     shm: Arc<std::sync::Mutex<ShmHandle>>,
@@ -79,6 +88,164 @@ impl App {
             let _ = tx.send(ToRenderer::SetResolution { width: rw, height: rh });
         }
     }
+}
+
+fn hwnd_from_window(window: &Window) -> HWND {
+    let handle = window
+        .window_handle()
+        .expect("Failed to get window handle");
+    match handle.as_raw() {
+        RawWindowHandle::Win32(h) => HWND(h.hwnd.get() as *mut core::ffi::c_void),
+        _ => panic!("Only Win32 is supported for desktop host"),
+    }
+}
+
+fn install_script(webview: &ICoreWebView2, script: &str) {
+    let webview = webview.clone();
+    let script = script.to_string();
+    AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
+        Box::new(move |handler| unsafe {
+            let script = CoTaskMemPWSTR::from(script.as_str());
+            webview
+                .AddScriptToExecuteOnDocumentCreated(*script.as_ref().as_pcwstr(), &handler)
+                .map_err(webview2_com::Error::WindowsError)
+        }),
+        Box::new(|error_code, _id| error_code),
+    )
+    .expect("Failed to install initialization script");
+}
+
+fn create_direct_webview2(
+    hwnd: HWND,
+    init_script: &str,
+    nav_flag: Arc<std::sync::atomic::AtomicBool>,
+    ipc_sidecar_tx: Option<flume::Sender<ToRenderer>>,
+    ipc_render_state: Arc<std::sync::Mutex<RenderState>>,
+) -> (ICoreWebView2Environment, ICoreWebView2Controller, ICoreWebView2) {
+    let environment = {
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
+            Box::new(|handler| unsafe {
+                CreateCoreWebView2Environment(&handler).map_err(webview2_com::Error::WindowsError)
+            }),
+            Box::new(move |error_code, environment| {
+                error_code?;
+                tx.send(environment.ok_or_else(|| windows::core::Error::from(E_POINTER)))
+                    .expect("Failed to send webview environment");
+                Ok(())
+            }),
+        )
+        .expect("Failed to create WebView2 environment");
+
+        rx.recv()
+            .expect("Failed to receive webview environment")
+            .expect("WebView2 environment is null")
+    };
+
+    let controller = {
+        let environment = environment.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        CreateCoreWebView2ControllerCompletedHandler::wait_for_async_operation(
+            Box::new(move |handler| unsafe {
+                environment
+                    .CreateCoreWebView2Controller(hwnd, &handler)
+                    .map_err(webview2_com::Error::WindowsError)
+            }),
+            Box::new(move |error_code, controller| {
+                error_code?;
+                tx.send(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)))
+                    .expect("Failed to send webview controller");
+                Ok(())
+            }),
+        )
+        .expect("Failed to create WebView2 controller");
+
+        rx.recv()
+            .expect("Failed to receive webview controller")
+            .expect("WebView2 controller is null")
+    };
+
+    unsafe {
+        let mut rect = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rect);
+        controller
+            .SetBounds(rect)
+            .expect("Failed to set initial webview bounds");
+        controller
+            .SetIsVisible(true)
+            .expect("Failed to set webview visible");
+    }
+
+    let webview = unsafe { controller.CoreWebView2() }.expect("Failed to get CoreWebView2");
+
+    // Keep compatibility with the existing panel code that calls window.ipc.postMessage(...)
+    install_script(
+        &webview,
+        r#"window.ipc = { postMessage: function (s) { if (window.chrome && window.chrome.webview) { window.chrome.webview.postMessage(String(s)); } } };"#,
+    );
+    install_script(&webview, init_script);
+
+    unsafe {
+        let mut _token = EventRegistrationToken::default();
+        webview
+            .add_WebMessageReceived(
+                &WebMessageReceivedEventHandler::create(Box::new(
+                    move |_sender, args: Option<ICoreWebView2WebMessageReceivedEventArgs>| {
+                        if let Some(args) = args {
+                            let mut message = windows_core::PWSTR(std::ptr::null_mut());
+                            if args.TryGetWebMessageAsString(&mut message).is_ok() {
+                                let body = CoTaskMemPWSTR::from(message).to_string();
+                                if let Ok(msg) = serde_json::from_str::<IpcMessage>(&body) {
+                                    if let Some(resize) = msg.resize {
+                                        {
+                                            let mut st = ipc_render_state.lock().unwrap();
+                                            st.css_size = (resize.width, resize.height);
+                                            st.dpr = resize.dpr;
+                                        }
+                                        let (rw, rh) =
+                                            ipc_render_state.lock().unwrap().render_resolution();
+                                        if let Some(ref tx) = ipc_sidecar_tx {
+                                            let _ = tx.send(ToRenderer::SetResolution {
+                                                width: rw,
+                                                height: rh,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(())
+                    },
+                )),
+                &mut _token,
+            )
+            .expect("Failed to register web message handler");
+    }
+
+    unsafe {
+        let mut _token = EventRegistrationToken::default();
+        webview
+            .add_NavigationCompleted(
+                &NavigationCompletedEventHandler::create(Box::new(move |_sender, _args| {
+                    tracing::info!("NavigationCompleted");
+                    nav_flag.store(true, Ordering::Release);
+                    Ok(())
+                })),
+                &mut _token,
+            )
+            .expect("Failed to register navigation handler");
+    }
+
+    unsafe {
+        let url = CoTaskMemPWSTR::from("http://127.0.0.1:18742/index.html");
+        webview
+            .Navigate(*url.as_ref().as_pcwstr())
+            .expect("Failed to navigate webview");
+    }
+
+    (environment, controller, webview)
 }
 
 impl ApplicationHandler for App {
@@ -223,44 +390,17 @@ impl ApplicationHandler for App {
 "#;
 
         let nav_completed_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let nav_flag_clone = nav_completed_flag.clone();
         let ipc_sidecar_tx = self.sidecar_cmd_tx.clone();
         let ipc_render_state = self.render_state.clone();
 
-        let webview = WebViewBuilder::new()
-            .with_url("http://127.0.0.1:18742/index.html")
-            .with_devtools(true)
-            .with_transparent(true)
-            .with_initialization_script(init_script)
-            .with_ipc_handler(move |req| {
-                if let Ok(msg) = serde_json::from_str::<IpcMessage>(req.body()) {
-                    if let Some(resize) = msg.resize {
-                        {
-                            let mut st = ipc_render_state.lock().unwrap();
-                            st.css_size = (resize.width, resize.height);
-                            st.dpr = resize.dpr;
-                        }
-                        let (rw, rh) = ipc_render_state.lock().unwrap().render_resolution();
-                        if let Some(ref tx) = ipc_sidecar_tx {
-                            let _ = tx.send(ToRenderer::SetResolution { width: rw, height: rh });
-                        }
-                    }
-                }
-            })
-            .with_on_page_load_handler(move |event, _url| {
-                if matches!(event, wry::PageLoadEvent::Finished) {
-                    tracing::info!("NavigationCompleted");
-                    nav_flag_clone.store(true, Ordering::Release);
-                }
-            })
-            .build(&window)
-            .expect("Failed to build webview");
-
-        let env = webview.environment();
-        let controller = webview.controller();
-
-        let core_wv: ICoreWebView2 =
-            unsafe { controller.CoreWebView2() }.expect("Failed to get CoreWebView2");
+        let hwnd = hwnd_from_window(&window);
+        let (env, controller, core_wv) = create_direct_webview2(
+            hwnd,
+            init_script,
+            nav_completed_flag.clone(),
+            ipc_sidecar_tx,
+            ipc_render_state,
+        );
 
         let env12: ICoreWebView2Environment12 = env
             .cast()
@@ -286,7 +426,7 @@ impl ApplicationHandler for App {
         event_loop.set_control_flow(ControlFlow::Poll);
 
         self._window = Some(window);
-        self._webview = Some(webview);
+        self.webview_controller = Some(controller);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -333,14 +473,14 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match &event {
             WindowEvent::Resized(size) => {
-                if let (Some(ref win), Some(ref wv)) = (&self._window, &self._webview)
-                {
-                    let scale = win.scale_factor();
-                    let logical = size.to_logical::<u32>(scale);
-                    let _ = wv.set_bounds(Rect {
-                        position: LogicalPosition::new(0, 0).into(),
-                        size: LogicalSize::new(logical.width, logical.height).into(),
-                    });
+                if let Some(ref controller) = self.webview_controller {
+                    let rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: size.width as i32,
+                        bottom: size.height as i32,
+                    };
+                    let _ = unsafe { controller.SetBounds(rect) };
                 }
             }
             WindowEvent::CloseRequested => {
@@ -626,7 +766,7 @@ fn main() {
     event_loop
         .run_app(&mut App {
             _window: None,
-            _webview: None,
+            webview_controller: None,
             sidecar: Some(sidecar_handle),
             sidecar_cmd_tx: Some(sidecar_cmd_tx_for_app),
             shm,

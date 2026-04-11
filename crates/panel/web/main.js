@@ -151,11 +151,21 @@
     jsFpsTick = now;
   }
 
+  function readFrameSeq(buffer) {
+    try {
+      if (typeof SharedArrayBuffer !== "undefined" && buffer instanceof SharedArrayBuffer) {
+        return Atomics.load(new Int32Array(buffer, 0, 1), 0) >>> 0;
+      }
+    } catch (_e) {
+      // Fall through to non-atomic read for compatibility.
+    }
+    return new DataView(buffer, 0, 4).getUint32(0, true);
+  }
+
   function renderLoop() {
     var sab = window.__frameSab || null;
     if (sab) {
-      var seq32 = new Int32Array(sab, 0, 1);
-      var seq = Atomics.load(seq32, 0);
+      var seq = readFrameSeq(sab);
       if (seq !== lastSeq && seq > 0) {
         lastSeq = seq;
         var dv = new DataView(sab, 0, 20);

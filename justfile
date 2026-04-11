@@ -19,13 +19,19 @@ build-panel:
     {{ _python }} scripts/build_panel.py
 
 _kill-old:
-    {{ _python }} scripts/kill_processes.py renderer.exe renderer demo-panel.exe demo-panel
+    {{ _python }} scripts/kill_processes.py renderer.exe renderer demo-panel.exe demo-panel demo-panel-wry.exe demo-panel-wry
 
 dev: _kill-old build-renderer-debug _copy-renderer-debug build-panel
     cargo run --package demo-panel
 
+dev-wry: _kill-old build-renderer-debug _copy-renderer-debug build-panel
+    cargo run --package demo-panel-wry
+
 build: build-renderer-release _copy-renderer-release build-panel
     cargo build --package demo-panel --release
+
+build-wry: build-renderer-release _copy-renderer-release build-panel
+    cargo build --package demo-panel-wry --release
 
 build-renderer-debug:
     cargo build --package renderer

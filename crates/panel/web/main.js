@@ -1,6 +1,8 @@
 (function () {
   var ws = null;
   var wsReady = false;
+  var frameWs = null;
+  var frameWsReady = false;
   var rpcId = 1;
   var sensorData = new Map();
   var lastSeq = 0;
@@ -98,6 +100,74 @@
       if (msg.method === "renderer.fps" && msg.params) {
         rendererFpsEl.textContent = "Bevy: " + Number(msg.params.fps || 0).toFixed(1);
       }
+    };
+  }
+
+  function handleFramePacket(buffer) {
+    if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 16) {
+      return;
+    }
+
+    var dv = new DataView(buffer);
+    var seq = dv.getUint32(0, true);
+    var w = dv.getUint32(4, true);
+    var h = dv.getUint32(8, true);
+    var dataLen = dv.getUint32(12, true);
+
+    if (seq === 0 || seq <= lastSeq || w === 0 || h === 0 || dataLen === 0) {
+      return;
+    }
+    if (16 + dataLen > buffer.byteLength) {
+      return;
+    }
+
+    lastSeq = seq;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+      imageDataCache = ctx.createImageData(w, h);
+      resolutionEl.textContent = w + "x" + h;
+    }
+
+    if (imageDataCache && imageDataCache.data.length === w * h * 4) {
+      imageDataCache.data.set(new Uint8ClampedArray(buffer, 16, w * h * 4));
+      ctx.putImageData(imageDataCache, 0, 0);
+      jsFpsFrames += 1;
+    }
+  }
+
+  function connectFrameWs() {
+    if (frameWsReady || frameWs) {
+      return;
+    }
+    if (window.__frameSab) {
+      return;
+    }
+
+    frameWs = new WebSocket("ws://127.0.0.1:18742/frame.ws");
+    frameWs.binaryType = "arraybuffer";
+
+    frameWs.onopen = function () {
+      frameWsReady = true;
+    };
+
+    frameWs.onclose = function () {
+      frameWsReady = false;
+      frameWs = null;
+      setTimeout(connectFrameWs, 1000);
+    };
+
+    frameWs.onerror = function () {
+      if (frameWs) {
+        frameWs.close();
+      }
+    };
+
+    frameWs.onmessage = function (event) {
+      if (window.__frameSab) {
+        return;
+      }
+      handleFramePacket(event.data);
     };
   }
 
@@ -216,6 +286,11 @@
   }
 
   connectWs();
+  setTimeout(function () {
+    if (!window.__frameSab) {
+      connectFrameWs();
+    }
+  }, 1200);
   setupResolutionToolbar();
   bindKeyboard();
   fitCanvasCss();

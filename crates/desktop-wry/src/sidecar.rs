@@ -1,7 +1,7 @@
+use flume::{Receiver, Sender};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use flume::{Receiver, Sender};
 
 use shared::protocol::{IpcEnvelope, IpcPayload, ToDesktop, ToRenderer};
 
@@ -15,7 +15,10 @@ impl SidecarHandle {
     pub async fn kill(self) -> Result<(), String> {
         let mut guard = self.child.lock().await;
         if let Some(mut child) = guard.take() {
-            child.kill().await.map_err(|e| format!("Failed to kill sidecar: {}", e))?;
+            child
+                .kill()
+                .await
+                .map_err(|e| format!("Failed to kill sidecar: {}", e))?;
         }
         Ok(())
     }

@@ -192,11 +192,17 @@ impl ShmHandle {
         let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
         let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o666) };
         if fd < 0 {
-            return Err(format!("shm_open(create) failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "shm_open(create) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         if unsafe { libc::ftruncate(fd, size as i64) } != 0 {
             unsafe { libc::close(fd) };
-            return Err(format!("ftruncate failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "ftruncate failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let ptr = unsafe {
@@ -211,7 +217,10 @@ impl ShmHandle {
         };
         if ptr == libc::MAP_FAILED {
             unsafe { libc::close(fd) };
-            return Err(format!("mmap(create) failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "mmap(create) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, size) };
 
@@ -227,7 +236,10 @@ impl ShmHandle {
         let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
         let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
         if fd < 0 {
-            return Err(format!("shm_open(open) failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "shm_open(open) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let ptr = unsafe {
@@ -242,7 +254,10 @@ impl ShmHandle {
         };
         if ptr == libc::MAP_FAILED {
             unsafe { libc::close(fd) };
-            return Err(format!("mmap(open) failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "mmap(open) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         Ok(Self {

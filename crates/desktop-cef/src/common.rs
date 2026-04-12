@@ -2,11 +2,40 @@ use server::data::MockDataSource;
 use shared::event::{NamedEvent, FRAME_EVENT_NAME};
 use shared::protocol::ToRenderer;
 use shared::shm::{DualControl, FrameHeader, ShmHandle, SHM_MAX_SIZE, SHM_NAME};
+use std::process::{Child, Command};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::process::{Child, Command};
 
 use crate::sidecar;
+
+pub struct RuntimeContext {
+    platform: &'static str,
+    url: String,
+    rt: tokio::runtime::Runtime,
+    server_task: Option<tokio::task::JoinHandle<()>>,
+    sidecar_handle: Option<sidecar::SidecarHandle>,
+}
+
+impl RuntimeContext {
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn shutdown(mut self) {
+        let platform = self.platform;
+        self.rt.block_on(async move {
+            if let Some(server_task) = self.server_task.take() {
+                server_task.abort();
+            }
+
+            if let Some(sidecar_handle) = self.sidecar_handle.take() {
+                if let Err(error) = sidecar_handle.kill().await {
+                    tracing::warn!(platform, %error, "failed to kill Bevy sidecar");
+                }
+            }
+        });
+    }
+}
 
 fn find_dist_dir() -> std::path::PathBuf {
     for candidate in ["dist", "../dist"] {
@@ -54,7 +83,15 @@ fn spawn_shm_probe(shm: Arc<std::sync::Mutex<ShmHandle>>, label: &'static str) {
                 last_seq = seq;
                 reported += 1;
                 if reported == 1 || reported % 300 == 0 {
-                    tracing::info!(label, seq, w, h, len, reported, "cef runtime observed shm frame");
+                    tracing::info!(
+                        label,
+                        seq,
+                        w,
+                        h,
+                        len,
+                        reported,
+                        "cef runtime observed shm frame"
+                    );
                 }
             }
         })
@@ -62,44 +99,12 @@ fn spawn_shm_probe(shm: Arc<std::sync::Mutex<ShmHandle>>, label: &'static str) {
 }
 
 fn maybe_launch_cef_host(platform: &'static str, port: u16) -> Option<Child> {
-    let url = format!("http://127.0.0.1:{port}");
-
     let Some(base_cmd) = std::env::var("DEMO_CEF_HOST_CMD").ok() else {
-        tracing::warn!(platform, %url, "DEMO_CEF_HOST_CMD is not set; falling back to visible browser host");
-
-        let child = if cfg!(windows) {
-            let edge_paths = [
-                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            ];
-
-            edge_paths
-                .iter()
-                .find(|path| std::path::Path::new(path).exists())
-                .map(|path| {
-                    Command::new(path)
-                        .args(["--new-window", &url])
-                        .spawn()
-                })
-                .unwrap_or_else(|| {
-                    Command::new("cmd")
-                        .args(["/C", "start", "", &url])
-                        .spawn()
-                })
-        } else {
-            Command::new("xdg-open").arg(&url).spawn()
-        };
-
-        return match child {
-            Ok(c) => {
-                tracing::info!(platform, %url, pid = ?c.id(), "started fallback browser host");
-                Some(c)
-            }
-            Err(e) => {
-                tracing::error!(platform, %url, error = %e, "failed to start fallback browser host");
-                None
-            }
-        };
+        tracing::error!(
+            platform,
+            "DEMO_CEF_HOST_CMD is not set; demo-panel-cef requires a real CEF host executable"
+        );
+        return None;
     };
 
     let full_cmd = format!(
@@ -127,15 +132,20 @@ fn maybe_launch_cef_host(platform: &'static str, port: u16) -> Option<Child> {
     }
 }
 
-pub fn run(platform: &'static str) {
-    tracing_subscriber::fmt()
+fn init_tracing() {
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        .init();
+        .try_init();
+}
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+pub fn start_runtime(platform: &'static str) -> Result<RuntimeContext, String> {
+    init_tracing();
+
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
 
     let data_source = Arc::new(MockDataSource::new()) as Arc<dyn server::data::DataSource>;
     let dist_dir = find_dist_dir();
@@ -148,7 +158,7 @@ pub fn run(platform: &'static str) {
 
     let sidecar_handle = rt
         .block_on(sidecar::start_sidecar(sidecar_cmd_rx, log_tx, ipc_tx))
-        .expect("Failed to start Bevy sidecar");
+        .map_err(|e| format!("Failed to start Bevy sidecar: {e}"))?;
 
     let shm: Arc<std::sync::Mutex<ShmHandle>> = {
         let mut handle = None;
@@ -161,9 +171,9 @@ pub fn run(platform: &'static str) {
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
             }
         }
-        Arc::new(std::sync::Mutex::new(handle.expect(
-            "Failed to open shared memory after waiting 10s for renderer",
-        )))
+        Arc::new(std::sync::Mutex::new(handle.ok_or_else(|| {
+            "Failed to open shared memory after waiting 10s for renderer".to_string()
+        })?))
     };
 
     spawn_shm_probe(shm.clone(), platform);
@@ -173,7 +183,11 @@ pub fn run(platform: &'static str) {
         .name(format!("{platform}-resolution-listener"))
         .spawn(move || {
             while let Ok((w, h)) = resolution_rx.recv() {
-                let (rw, rh) = if w == 0 || h == 0 { (1280, 800) } else { (w, h) };
+                let (rw, rh) = if w == 0 || h == 0 {
+                    (1280, 800)
+                } else {
+                    (w, h)
+                };
                 tracing::info!(platform, w, h, rw, rh, "resolution-listener forwarding");
                 let _ = sidecar_cmd_tx_for_listener.send(ToRenderer::SetResolution {
                     width: rw,
@@ -183,11 +197,11 @@ pub fn run(platform: &'static str) {
         })
         .expect("Failed to spawn resolution listener thread");
 
-    rt.block_on(async move {
+    let server_task = rt.block_on(async move {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let listener = tokio::net::TcpListener::bind(addr)
             .await
-            .expect("Failed to bind axum server");
+            .map_err(|e| format!("Failed to bind axum server: {e}"))?;
         tracing::info!(platform, %addr, "cef runtime axum listening");
 
         let server_task = tokio::spawn(async move {
@@ -207,15 +221,42 @@ pub fn run(platform: &'static str) {
             .expect("Axum server error");
         });
 
-        let mut cef_child = maybe_launch_cef_host(platform, port);
-        tracing::info!(platform, "cef host bridge ready: set DEMO_CEF_HOST_CMD to wire real CEF host");
+        Ok::<_, String>(server_task)
+    })?;
+
+    Ok(RuntimeContext {
+        platform,
+        url: format!("http://127.0.0.1:{port}"),
+        rt,
+        server_task: Some(server_task),
+        sidecar_handle: Some(sidecar_handle),
+    })
+}
+
+pub fn run_external_host(platform: &'static str) {
+    let runtime = match start_runtime(platform) {
+        Ok(runtime) => runtime,
+        Err(error) => panic!("{error}"),
+    };
+
+    let mut cef_child = maybe_launch_cef_host(platform, 18742);
+    if cef_child.is_none() {
+        runtime.shutdown();
+        return;
+    }
+    tracing::info!(
+        platform,
+        "cef host bridge ready: set DEMO_CEF_HOST_CMD to wire real CEF host"
+    );
+
+    runtime.rt.block_on(async {
         let _ = tokio::signal::ctrl_c().await;
         tracing::info!(platform, "ctrl-c received, shutting down");
-        server_task.abort();
-
-        if let Some(mut child) = cef_child.take() {
-            let _ = child.kill();
-        }
-        let _ = sidecar_handle.kill().await;
     });
+
+    if let Some(mut child) = cef_child.take() {
+        let _ = child.kill();
+    }
+
+    runtime.shutdown();
 }

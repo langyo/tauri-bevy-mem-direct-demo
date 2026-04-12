@@ -11,6 +11,8 @@ path = "src/main.rs"
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+anyhow = { workspace = true }
+cef = { version = "146.5.0", default-features = false, features = ["build-util"] }
 server = { path = "../server" }
 shared = { path = "../shared" }
 tokio = { workspace = true }

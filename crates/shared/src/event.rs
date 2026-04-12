@@ -86,7 +86,10 @@ impl NamedEvent {
         let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
         let sem = unsafe { libc::sem_open(c_name.as_ptr(), libc::O_CREAT, 0o666, 0) };
         if sem == libc::SEM_FAILED {
-            return Err(format!("sem_open(create) failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "sem_open(create) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         Ok(Self { sem })
     }
@@ -96,7 +99,10 @@ impl NamedEvent {
         let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
         let sem = unsafe { libc::sem_open(c_name.as_ptr(), 0) };
         if sem == libc::SEM_FAILED {
-            return Err(format!("sem_open(open) failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "sem_open(open) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         Ok(Self { sem })
     }
@@ -108,7 +114,10 @@ impl NamedEvent {
     }
 
     pub fn wait(&self, timeout_ms: u32) -> bool {
-        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
         unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
         let add_sec = (timeout_ms / 1000) as i64;
         let add_nsec = ((timeout_ms % 1000) as i64) * 1_000_000;

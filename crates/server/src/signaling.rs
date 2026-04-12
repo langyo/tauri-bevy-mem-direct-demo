@@ -78,10 +78,7 @@ pub fn router() -> Router<AppState> {
         .route("/ice", post(handle_ice).get(handle_ice_get))
 }
 
-async fn handle_offer(
-    State(state): State<AppState>,
-    Json(req): Json<OfferRequest>,
-) -> Response {
+async fn handle_offer(State(state): State<AppState>, Json(req): Json<OfferRequest>) -> Response {
     let (reply_tx, reply_rx) = flume::bounded(1);
 
     if state.signaling.offer_tx.send((req.sdp, reply_tx)).is_err() {
@@ -127,10 +124,7 @@ async fn handle_answer() -> Response {
         .into_response()
 }
 
-async fn handle_ice(
-    State(state): State<AppState>,
-    Json(req): Json<IceRequest>,
-) -> Response {
+async fn handle_ice(State(state): State<AppState>, Json(req): Json<IceRequest>) -> Response {
     let _ = state.signaling.ice_to_sidecar_tx.send(req.candidate);
 
     let mut guard = state.signaling.ice_from_sidecar_buffer.lock().unwrap();

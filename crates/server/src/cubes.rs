@@ -1,11 +1,11 @@
-use axum::{extract::State, response::Json};
 use crate::data::DataSource;
 use crate::signaling::SignalingBridge;
+use axum::{extract::State, response::Json};
+use flume::Sender;
 use shared::cube::CubeMetadata;
 use shared::protocol::ToDesktop;
-use shared::shm::ShmHandle;
 use shared::protocol::ToRenderer;
-use flume::Sender;
+use shared::shm::ShmHandle;
 use std::sync::Arc;
 
 pub type SidecarCommand = ToRenderer;

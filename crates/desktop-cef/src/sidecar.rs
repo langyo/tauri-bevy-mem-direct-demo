@@ -1,7 +1,7 @@
+use flume::{Receiver, Sender};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use flume::{Receiver, Sender};
 
 use shared::protocol::{IpcEnvelope, IpcPayload, ToDesktop, ToRenderer};
 
@@ -15,7 +15,10 @@ impl SidecarHandle {
     pub async fn kill(self) -> Result<(), String> {
         let mut guard = self.child.lock().await;
         if let Some(mut child) = guard.take() {
-            child.kill().await.map_err(|e| format!("Failed to kill sidecar: {}", e))?;
+            child
+                .kill()
+                .await
+                .map_err(|e| format!("Failed to kill sidecar: {}", e))?;
         }
         Ok(())
     }
@@ -26,22 +29,38 @@ pub async fn start_sidecar(
     log_tx: Sender<String>,
     ipc_tx: Sender<ToDesktop>,
 ) -> Result<SidecarHandle, Box<dyn std::error::Error + Send + Sync>> {
-    let bin_dir = std::env::current_exe()?
+    let exe_dir = std::env::current_exe()?
         .parent()
         .ok_or("Cannot determine executable directory")?
-        .join("binaries");
+        .to_path_buf();
+    let profile = exe_dir
+        .file_name()
+        .and_then(|part| part.to_str())
+        .ok_or("Cannot determine cargo profile")?
+        .to_string();
 
-    let renderer_path = if cfg!(windows) {
-        bin_dir.join("renderer.exe")
-    } else {
-        let native = bin_dir.join("renderer");
-        if native.exists() {
-            native
-        } else {
-            // In WSL development flow we reuse the Windows-built sidecar binary.
-            bin_dir.join("renderer.exe")
-        }
-    };
+    let mut candidate_dirs = vec![exe_dir.join("binaries")];
+    if let Ok(cwd) = std::env::current_dir() {
+        candidate_dirs.push(cwd.join("target").join(&profile).join("binaries"));
+    }
+
+    let renderer_path = candidate_dirs
+        .into_iter()
+        .find_map(|bin_dir| {
+            if cfg!(windows) {
+                let candidate = bin_dir.join("renderer.exe");
+                candidate.exists().then_some(candidate)
+            } else {
+                let native = bin_dir.join("renderer");
+                if native.exists() {
+                    Some(native)
+                } else {
+                    let windows_fallback = bin_dir.join("renderer.exe");
+                    windows_fallback.exists().then_some(windows_fallback)
+                }
+            }
+        })
+        .ok_or("Cannot locate renderer sidecar binary")?;
 
     tracing::info!("Resolved renderer path: {}", renderer_path.display());
 

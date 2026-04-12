@@ -1,18 +1,18 @@
-pub mod ws;
-pub mod data;
 pub mod cubes;
+pub mod data;
 pub mod signaling;
+pub mod ws;
 
-use axum::Router;
+use crate::cubes::AppState;
+use crate::data::DataSource;
+use crate::signaling::SignalingBridge;
+use axum::extract::Request;
 use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::{self, Next};
-use axum::extract::Request;
 use axum::routing::get;
-use std::sync::Arc;
-use crate::data::DataSource;
-use crate::cubes::AppState;
-use crate::signaling::SignalingBridge;
+use axum::Router;
 use flume::Sender;
+use std::sync::Arc;
 use tower_http::services::ServeDir;
 
 use shared::protocol::ToDesktop;

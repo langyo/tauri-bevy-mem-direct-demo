@@ -1,3 +1,3 @@
 pub fn main() {
-    crate::common::run("linux-cef");
+    crate::common::run_external_host("linux-cef");
 }

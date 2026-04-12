@@ -6,6 +6,7 @@ members = [
     "crates/renderer",
     "crates/desktop",
     "crates/desktop-wry",
+    "crates/desktop-cef",
     "crates/panel",
 ]
 

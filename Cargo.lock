@@ -2042,6 +2042,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "demo-panel-cef"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "flume",
+ "serde",
+ "serde_json",
+ "server",
+ "shared",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "demo-panel-wry"
 version = "0.1.0"
 dependencies = [

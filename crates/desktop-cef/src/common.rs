@@ -62,12 +62,44 @@ fn spawn_shm_probe(shm: Arc<std::sync::Mutex<ShmHandle>>, label: &'static str) {
 }
 
 fn maybe_launch_cef_host(platform: &'static str, port: u16) -> Option<Child> {
+    let url = format!("http://127.0.0.1:{port}");
+
     let Some(base_cmd) = std::env::var("DEMO_CEF_HOST_CMD").ok() else {
-        tracing::warn!(
-            platform,
-            "DEMO_CEF_HOST_CMD is not set; CEF browser host is not started"
-        );
-        return None;
+        tracing::warn!(platform, %url, "DEMO_CEF_HOST_CMD is not set; falling back to visible browser host");
+
+        let child = if cfg!(windows) {
+            let edge_paths = [
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            ];
+
+            edge_paths
+                .iter()
+                .find(|path| std::path::Path::new(path).exists())
+                .map(|path| {
+                    Command::new(path)
+                        .args(["--new-window", &url])
+                        .spawn()
+                })
+                .unwrap_or_else(|| {
+                    Command::new("cmd")
+                        .args(["/C", "start", "", &url])
+                        .spawn()
+                })
+        } else {
+            Command::new("xdg-open").arg(&url).spawn()
+        };
+
+        return match child {
+            Ok(c) => {
+                tracing::info!(platform, %url, pid = ?c.id(), "started fallback browser host");
+                Some(c)
+            }
+            Err(e) => {
+                tracing::error!(platform, %url, error = %e, "failed to start fallback browser host");
+                None
+            }
+        };
     };
 
     let full_cmd = format!(

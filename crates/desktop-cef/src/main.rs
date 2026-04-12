@@ -1,3 +1,6 @@
+mod common;
+mod sidecar;
+
 #[cfg(target_os = "windows")]
 mod windows;
 

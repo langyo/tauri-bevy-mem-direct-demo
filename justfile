@@ -22,13 +22,13 @@ _kill-old:
     {{ _python }} scripts/kill_processes.py renderer.exe renderer demo-panel.exe demo-panel demo-panel-wry.exe demo-panel-wry
 
 dev mode="native": _kill-old build-renderer-debug _copy-renderer-debug build-panel
-    if ("{{mode}}" -eq "wsl") { cargo run --package demo-panel-wry } else { cargo run --package demo-panel }
+    if ("{{mode}}" -eq "wsl") { $p = $PWD.Path -replace '\\','/'; $linux_path = '/mnt/' + $p.Substring(0,1).ToLower() + $p.Substring(2); wsl.exe bash -lc "cd '$linux_path' && cargo run --package demo-panel-wry" } else { cargo run --package demo-panel }
 
 dev-wry:
     just dev wsl
 
 build mode="native": build-renderer-release _copy-renderer-release build-panel
-    if ("{{mode}}" -eq "wsl") { cargo build --package demo-panel-wry --release } else { cargo build --package demo-panel --release }
+    if ("{{mode}}" -eq "wsl") { $p = $PWD.Path -replace '\\','/'; $linux_path = '/mnt/' + $p.Substring(0,1).ToLower() + $p.Substring(2); wsl.exe bash -lc "cd '$linux_path' && cargo build --package demo-panel-wry --release" } else { cargo build --package demo-panel --release }
 
 build-wry:
     just build wsl

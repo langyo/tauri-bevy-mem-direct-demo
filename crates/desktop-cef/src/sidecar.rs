@@ -26,15 +26,22 @@ pub async fn start_sidecar(
     log_tx: Sender<String>,
     ipc_tx: Sender<ToDesktop>,
 ) -> Result<SidecarHandle, Box<dyn std::error::Error + Send + Sync>> {
-    let renderer_path = std::env::current_exe()?
+    let bin_dir = std::env::current_exe()?
         .parent()
         .ok_or("Cannot determine executable directory")?
-        .join("binaries")
-        .join(if cfg!(windows) {
-            "renderer.exe"
+        .join("binaries");
+
+    let renderer_path = if cfg!(windows) {
+        bin_dir.join("renderer.exe")
+    } else {
+        let native = bin_dir.join("renderer");
+        if native.exists() {
+            native
         } else {
-            "renderer"
-        });
+            // In WSL development flow we reuse the Windows-built sidecar binary.
+            bin_dir.join("renderer.exe")
+        }
+    };
 
     tracing::info!("Resolved renderer path: {}", renderer_path.display());
 

@@ -59,6 +59,13 @@ pub struct ShmHandle {
     size: usize,
 }
 
+#[cfg(not(target_os = "windows"))]
+pub struct ShmHandle {
+    fd: i32,
+    ptr: *mut u8,
+    size: usize,
+}
+
 #[cfg(target_os = "windows")]
 impl ShmHandle {
     pub fn create(name: &str, size: usize) -> Result<Self, String> {
@@ -165,5 +172,118 @@ impl Drop for ShmHandle {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn to_posix_name(name: &str) -> String {
+    let mut out = String::from("/");
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
+#[cfg(not(target_os = "windows"))]
+impl ShmHandle {
+    pub fn create(name: &str, size: usize) -> Result<Self, String> {
+        let name = to_posix_name(name);
+        let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o666) };
+        if fd < 0 {
+            return Err(format!("shm_open(create) failed: {}", std::io::Error::last_os_error()));
+        }
+        if unsafe { libc::ftruncate(fd, size as i64) } != 0 {
+            unsafe { libc::close(fd) };
+            return Err(format!("ftruncate failed: {}", std::io::Error::last_os_error()));
+        }
+
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            unsafe { libc::close(fd) };
+            return Err(format!("mmap(create) failed: {}", std::io::Error::last_os_error()));
+        }
+        unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, size) };
+
+        Ok(Self {
+            fd,
+            ptr: ptr as *mut u8,
+            size,
+        })
+    }
+
+    pub fn open(name: &str, size: usize) -> Result<Self, String> {
+        let name = to_posix_name(name);
+        let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
+        if fd < 0 {
+            return Err(format!("shm_open(open) failed: {}", std::io::Error::last_os_error()));
+        }
+
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            unsafe { libc::close(fd) };
+            return Err(format!("mmap(open) failed: {}", std::io::Error::last_os_error()));
+        }
+
+        Ok(Self {
+            fd,
+            ptr: ptr as *mut u8,
+            size,
+        })
+    }
+
+    pub fn slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.size) }
+    }
+
+    pub fn slice_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.size) }
+    }
+
+    pub fn as_ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl Drop for ShmHandle {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr as *mut libc::c_void, self.size);
+            libc::close(self.fd);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 unsafe impl Send for ShmHandle {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for ShmHandle {}
+#[cfg(not(target_os = "windows"))]
+unsafe impl Send for ShmHandle {}
+#[cfg(not(target_os = "windows"))]
 unsafe impl Sync for ShmHandle {}

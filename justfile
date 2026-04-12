@@ -22,13 +22,13 @@ _kill-old:
     {{ _python }} scripts/kill_processes.py renderer.exe renderer demo-panel.exe demo-panel demo-panel-wry.exe demo-panel-wry demo-panel-cef.exe demo-panel-cef
 
 dev mode="native": _kill-old build-renderer-debug _copy-renderer-debug build-panel
-    if ("{{mode}}" -eq "wsl") { $p = $PWD.Path -replace '\\','/'; $linux_path = '/mnt/' + $p.Substring(0,1).ToLower() + $p.Substring(2); wsl.exe bash -lc "cd '$linux_path' && cargo run --package demo-panel-wry" } elseif ("{{mode}}" -eq "cef") { cargo run --package demo-panel-cef } else { cargo run --package demo-panel }
+    if ("{{mode}}" -eq "wsl") { $p = $PWD.Path -replace '\\','/'; $linux_path = '/mnt/' + $p.Substring(0,1).ToLower() + $p.Substring(2); wsl.exe bash -lc "cd '$linux_path' && cargo build --package renderer && mkdir -p target/debug/binaries && cp target/debug/renderer target/debug/binaries/renderer && cargo run --package demo-panel-cef" } elseif ("{{mode}}" -eq "cef") { cargo run --package demo-panel-cef } elseif ("{{mode}}" -eq "wry") { cargo run --package demo-panel-wry } else { cargo run --package demo-panel }
 
 dev-wry:
-    just dev wsl
+    just dev wry
 
 build mode="native": build-renderer-release _copy-renderer-release build-panel
-    if ("{{mode}}" -eq "wsl") { $p = $PWD.Path -replace '\\','/'; $linux_path = '/mnt/' + $p.Substring(0,1).ToLower() + $p.Substring(2); wsl.exe bash -lc "cd '$linux_path' && cargo build --package demo-panel-wry --release" } elseif ("{{mode}}" -eq "cef") { cargo build --package demo-panel-cef --release } else { cargo build --package demo-panel --release }
+    if ("{{mode}}" -eq "wsl") { $p = $PWD.Path -replace '\\','/'; $linux_path = '/mnt/' + $p.Substring(0,1).ToLower() + $p.Substring(2); wsl.exe bash -lc "cd '$linux_path' && cargo build --package renderer --release && mkdir -p target/release/binaries && cp target/release/renderer target/release/binaries/renderer && cargo build --package demo-panel-cef --release" } elseif ("{{mode}}" -eq "cef") { cargo build --package demo-panel-cef --release } elseif ("{{mode}}" -eq "wry") { cargo build --package demo-panel-wry --release } else { cargo build --package demo-panel --release }
 
 dev-cef:
     just dev cef
@@ -37,7 +37,7 @@ build-cef:
     just build cef
 
 build-wry:
-    just build wsl
+    just build wry
 
 build-renderer-debug:
     cargo build --package renderer

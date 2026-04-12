@@ -1,3 +1,4 @@
+use crate::cubes::{AppState, SidecarCommand};
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::State,
@@ -5,12 +6,13 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use shared::event::{NamedEvent, FRAME_EVENT_NAME};
-use shared::proto::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RendererFpsParams, SensorSnapshotParams};
+use shared::proto::{
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RendererFpsParams, SensorSnapshotParams,
+};
 use shared::protocol::{MoveDirection, ToDesktop, ToRenderer};
 use shared::shm::{DualControl, FrameHeader, ShmHandle, FRAME_HEADER_SIZE};
-use crate::cubes::{AppState, SidecarCommand};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 pub type FrameReceiver = flume::Receiver<Vec<u8>>;
 
@@ -29,7 +31,8 @@ pub fn spawn_frame_reader(shm: Arc<std::sync::Mutex<ShmHandle>>) -> FrameReceive
     std::thread::Builder::new()
         .name("frame-reader".into())
         .spawn(move || {
-            let shm_slice = unsafe { std::slice::from_raw_parts(shm_addr.0 as *const u8, shm_addr.1) };
+            let shm_slice =
+                unsafe { std::slice::from_raw_parts(shm_addr.0 as *const u8, shm_addr.1) };
             let ctrl = DualControl::as_bytes(shm_slice);
             let mut last_seq = 0u64;
 
@@ -71,10 +74,7 @@ pub fn spawn_frame_reader(shm: Arc<std::sync::Mutex<ShmHandle>>) -> FrameReceive
     rx
 }
 
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -115,7 +115,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let snapshot_json = serde_json::to_string(&notification).unwrap();
 
     let (mut sender, mut receiver) = socket.split();
-    if sender.send(Message::Text(snapshot_json.into())).await.is_err() {
+    if sender
+        .send(Message::Text(snapshot_json.into()))
+        .await
+        .is_err()
+    {
         return;
     }
 
@@ -291,8 +295,16 @@ async fn handle_rpc_request(
             }
         }
         "display.renderResolution" => {
-            let w = req.params.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let h = req.params.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let w = req
+                .params
+                .get("width")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let h = req
+                .params
+                .get("height")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
             tracing::info!(w, h, "RPC display.renderResolution received");
             if w == 0 && h == 0 {
                 let _ = resolution_tx.send((0, 0));
@@ -306,18 +318,16 @@ async fn handle_rpc_request(
                 id: req.id,
             }
         }
-        _ => {
-            JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                result: None,
-                error: Some(shared::proto::JsonRpcError {
-                    code: -32601,
-                    message: "Method not found".into(),
-                    data: None,
-                }),
-                id: req.id,
-            }
-        }
+        _ => JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            result: None,
+            error: Some(shared::proto::JsonRpcError {
+                code: -32601,
+                message: "Method not found".into(),
+                data: None,
+            }),
+            id: req.id,
+        },
     };
     let json = serde_json::to_string(&response).unwrap();
     let _ = sender.send(Message::Text(json.into())).await;

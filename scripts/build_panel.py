@@ -22,7 +22,8 @@ def main():
     dist_dir = os.path.join(root_dir, "dist")
 
     if not os.path.isdir(src_dir):
-        print(f"Error: panel web assets not found at {src_dir}", file=sys.stderr)
+        print(
+            f"Error: panel web assets not found at {src_dir}", file=sys.stderr)
         sys.exit(1)
 
     if os.path.isdir(dist_dir):

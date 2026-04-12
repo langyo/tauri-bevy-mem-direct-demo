@@ -36,4 +36,3 @@ bevy = "0.15"
 raw-window-handle = "0.6"
 
 winit = "0.30"
-wry = "0.49"

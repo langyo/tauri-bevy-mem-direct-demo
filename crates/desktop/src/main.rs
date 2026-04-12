@@ -1,24 +1,23 @@
 mod sidecar;
 
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use serde::Deserialize;
 use server::data::MockDataSource;
 use shared::event::{NamedEvent, FRAME_EVENT_NAME};
 use shared::protocol::ToRenderer;
-use shared::shm::{
-    DualControl, FrameHeader, ShmHandle, FRAME_HEADER_SIZE, SHM_MAX_SIZE, SHM_NAME,
-};
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::sync::Arc;
+use shared::shm::{DualControl, FrameHeader, ShmHandle, FRAME_HEADER_SIZE, SHM_MAX_SIZE, SHM_NAME};
 use std::sync::atomic::Ordering;
-use webview2_com::{
-    AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR,
-    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    NavigationCompletedEventHandler, WebMessageReceivedEventHandler,
-};
+use std::sync::Arc;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     CreateCoreWebView2Environment, ICoreWebView2, ICoreWebView2Controller,
     ICoreWebView2Environment, ICoreWebView2Environment12, ICoreWebView2SharedBuffer,
     ICoreWebView2WebMessageReceivedEventArgs, ICoreWebView2_17,
     COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_ONLY,
+};
+use webview2_com::{
+    AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    NavigationCompletedEventHandler, WebMessageReceivedEventHandler,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
 use windows::Win32::System::WinRT::EventRegistrationToken;
@@ -28,7 +27,6 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Window, WindowId};
-use serde::Deserialize;
 
 const SHARED_HEADER_SIZE: usize = 64;
 const SHARED_BUF_SIZE: usize = SHARED_HEADER_SIZE + shared::shm::MAX_FRAME_DATA;
@@ -85,15 +83,16 @@ impl App {
     fn send_render_resolution(&self) {
         let (rw, rh) = self.render_state.lock().unwrap().render_resolution();
         if let Some(ref tx) = self.sidecar_cmd_tx {
-            let _ = tx.send(ToRenderer::SetResolution { width: rw, height: rh });
+            let _ = tx.send(ToRenderer::SetResolution {
+                width: rw,
+                height: rh,
+            });
         }
     }
 }
 
 fn hwnd_from_window(window: &Window) -> HWND {
-    let handle = window
-        .window_handle()
-        .expect("Failed to get window handle");
+    let handle = window.window_handle().expect("Failed to get window handle");
     match handle.as_raw() {
         RawWindowHandle::Win32(h) => HWND(h.hwnd.get() as *mut core::ffi::c_void),
         _ => panic!("Only Win32 is supported for desktop host"),
@@ -121,7 +120,11 @@ fn create_direct_webview2(
     nav_flag: Arc<std::sync::atomic::AtomicBool>,
     ipc_sidecar_tx: Option<flume::Sender<ToRenderer>>,
     ipc_render_state: Arc<std::sync::Mutex<RenderState>>,
-) -> (ICoreWebView2Environment, ICoreWebView2Controller, ICoreWebView2) {
+) -> (
+    ICoreWebView2Environment,
+    ICoreWebView2Controller,
+    ICoreWebView2,
+) {
     let environment = {
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -411,9 +414,7 @@ impl ApplicationHandler for App {
         let mut buf_ptr: *mut u8 = std::ptr::null_mut();
         unsafe { shared_buffer.Buffer(&mut buf_ptr) }.expect("Failed to get SharedBuffer pointer");
 
-        let wv17: ICoreWebView2_17 = core_wv
-            .cast()
-            .expect("ICoreWebView2_17 not available");
+        let wv17: ICoreWebView2_17 = core_wv.cast().expect("ICoreWebView2_17 not available");
 
         spawn_frame_reader(self.shm.clone(), buf_ptr);
 
@@ -440,8 +441,7 @@ impl ApplicationHandler for App {
                 self.nav_completed = true;
                 tracing::info!("NavigationCompleted — posting SharedBuffer");
 
-                if let (Some(ref buffer), Some(ref wv17)) =
-                    (&self.sab_buffer, &self.sab_webview17)
+                if let (Some(ref buffer), Some(ref wv17)) = (&self.sab_buffer, &self.sab_webview17)
                 {
                     let json_wide: Vec<u16> = r#"{"type":"frameBuffer"}"#
                         .encode_utf16()
@@ -513,8 +513,7 @@ fn spawn_frame_reader(shm: Arc<std::sync::Mutex<ShmHandle>>, buf_ptr: *mut u8) {
                 (guard.as_ptr() as usize, guard.size())
             };
 
-            let shm_slice =
-                unsafe { std::slice::from_raw_parts(shm_ptr as *const u8, shm_size) };
+            let shm_slice = unsafe { std::slice::from_raw_parts(shm_ptr as *const u8, shm_size) };
             let shared_buf =
                 unsafe { std::slice::from_raw_parts_mut(buf_ptr_val as *mut u8, SHARED_BUF_SIZE) };
             let ctrl = DualControl::as_bytes(shm_slice);
@@ -561,8 +560,7 @@ fn spawn_frame_reader(shm: Arc<std::sync::Mutex<ShmHandle>>, buf_ptr: *mut u8) {
                     frame_count += 1;
                     std::sync::atomic::fence(Ordering::Release);
                     unsafe {
-                        let seq_atomic =
-                            &*(base as *const std::sync::atomic::AtomicU32);
+                        let seq_atomic = &*(base as *const std::sync::atomic::AtomicU32);
                         seq_atomic.store(frame_count as u32, Ordering::Release);
                     }
                 }
@@ -708,9 +706,9 @@ fn main() {
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
             }
         }
-        Arc::new(std::sync::Mutex::new(
-            handle.expect("Failed to open shared memory after waiting 10s for renderer"),
-        ))
+        Arc::new(std::sync::Mutex::new(handle.expect(
+            "Failed to open shared memory after waiting 10s for renderer",
+        )))
     };
 
     rt.block_on(async {
@@ -754,9 +752,15 @@ fn main() {
                     let mut st = render_state_for_listener.lock().unwrap();
                     st.override_resolution = if w == 0 && h == 0 { None } else { Some((w, h)) };
                 }
-                let (rw, rh) = render_state_for_listener.lock().unwrap().render_resolution();
+                let (rw, rh) = render_state_for_listener
+                    .lock()
+                    .unwrap()
+                    .render_resolution();
                 tracing::info!(rw, rh, "resolution-listener sending SetResolution");
-                let _ = sidecar_cmd_tx_for_listener.send(ToRenderer::SetResolution { width: rw, height: rh });
+                let _ = sidecar_cmd_tx_for_listener.send(ToRenderer::SetResolution {
+                    width: rw,
+                    height: rh,
+                });
             }
         })
         .expect("Failed to spawn resolution listener thread");

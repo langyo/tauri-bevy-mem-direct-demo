@@ -1,14 +1,130 @@
 use cef::{args::Args, *};
+use shared::shm::{ShmHandle, SHM_MAX_SIZE, SHM_NAME};
 use std::{
     cell::RefCell,
     ptr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_POPUP, WS_VISIBLE};
 
 #[derive(Default)]
 struct DemoClientState {
     browser_count: usize,
+}
+
+static RENDER_SHM: OnceLock<Mutex<Option<ShmHandle>>> = OnceLock::new();
+
+fn with_render_shm<T>(f: impl FnOnce(&ShmHandle) -> T) -> Option<T> {
+    let slot = RENDER_SHM.get_or_init(|| Mutex::new(None));
+    let mut guard = slot.lock().ok()?;
+    if guard.is_none() {
+        match ShmHandle::open(SHM_NAME, SHM_MAX_SIZE) {
+            Ok(shm) => {
+                *guard = Some(shm);
+            }
+            Err(error) => {
+                tracing::error!(%error, "CEF render process failed to open shared memory");
+                return None;
+            }
+        }
+    }
+
+    guard.as_ref().map(f)
+}
+
+wrap_v8_array_buffer_release_callback! {
+    struct NoopReleaseCallback;
+
+    impl V8ArrayBufferReleaseCallback {
+        fn release_buffer(&self, _buffer: *mut u8) {}
+    }
+}
+
+wrap_v8_handler! {
+    struct FrameSabV8Handler;
+
+    impl V8Handler {
+        fn execute(
+            &self,
+            name: Option<&CefString>,
+            _object: Option<&mut V8Value>,
+            _arguments: Option<&[Option<V8Value>]>,
+            retval: Option<&mut Option<V8Value>>,
+            _exception: Option<&mut CefString>,
+        ) -> ::std::os::raw::c_int {
+            let method = name.map(CefString::to_string).unwrap_or_default();
+            if method != "getFrameSab" {
+                return 0;
+            }
+
+            let array_buffer = with_render_shm(|shm| {
+                let mut callback = NoopReleaseCallback::new();
+                v8_value_create_array_buffer(
+                    shm.as_ptr() as *mut u8,
+                    shm.size(),
+                    Some(&mut callback),
+                )
+            })
+            .flatten();
+
+            let Some(mut array_buffer) = array_buffer else {
+                tracing::error!("Failed to create V8 ArrayBuffer from shared memory");
+                return 0;
+            };
+
+            if let Some(retval) = retval {
+                *retval = Some(array_buffer.clone());
+            }
+
+            1
+        }
+    }
+}
+
+wrap_render_process_handler! {
+    struct DemoRenderProcessHandler;
+
+    impl RenderProcessHandler {
+        fn on_context_created(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            context: Option<&mut V8Context>,
+        ) {
+            let Some(frame) = frame else {
+                return;
+            };
+            if frame.is_main() != 1 {
+                return;
+            }
+
+            let Some(context) = context else {
+                return;
+            };
+            let Some(mut global) = context.global() else {
+                return;
+            };
+
+            let name = CefString::from("getFrameSab");
+            let mut handler = FrameSabV8Handler::new();
+            let Some(mut func) = v8_value_create_function(Some(&name), Some(&mut handler)) else {
+                tracing::error!("Failed to create getFrameSab V8 function");
+                return;
+            };
+
+            let _ = global.set_value_bykey(
+                Some(&name),
+                Some(&mut func),
+                V8Propertyattribute::default(),
+            );
+
+            let code = CefString::from(
+                "(function(){try{if(!window.__frameSab&&typeof getFrameSab==='function'){window.__frameSab=getFrameSab();}}catch(_e){}})();",
+            );
+            let script_url = CefString::from("app://cef-zero-copy-bootstrap.js");
+            frame.execute_java_script(Some(&code), Some(&script_url), 1);
+            tracing::info!("Installed CEF zero-copy V8 bridge for __frameSab");
+        }
+    }
 }
 
 impl DemoClientState {
@@ -124,11 +240,10 @@ wrap_browser_process_handler! {
             let settings = BrowserSettings::default();
             let mut window_info = WindowInfo::default().set_as_popup(Default::default(), "demo-panel-cef");
             window_info.runtime_style = RuntimeStyle::ALLOY;
-            window_info.style = WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE;
             let url = CefString::from(self.url.as_str());
             let mut client = client_slot.clone();
 
-            browser_host_create_browser(
+            let created = browser_host_create_browser(
                 Some(&window_info),
                 client.as_mut(),
                 Some(&url),
@@ -136,6 +251,12 @@ wrap_browser_process_handler! {
                 None,
                 None,
             );
+
+            if created == 1 {
+                tracing::info!(%self.url, "CEF browser window created");
+            } else {
+                tracing::error!(%self.url, created, "CEF browser window creation failed");
+            }
         }
     }
 }
@@ -157,12 +278,19 @@ wrap_app! {
 
             command_line.append_switch(Some(&"autoplay-policy=no-user-gesture-required".into()));
             command_line.append_switch(Some(&"disable-web-security".into()));
-            command_line.append_switch(Some(&"disable-gpu".into()));
-            command_line.append_switch(Some(&"disable-gpu-compositing".into()));
+            command_line.append_switch(Some(&"no-v8-sandbox".into()));
+            command_line.append_switch_with_value(
+                Some(&"disable-features".into()),
+                Some(&"V8Sandbox".into()),
+            );
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
             Some(DemoBrowserProcessHandler::new(self.url.clone(), RefCell::new(None)))
+        }
+
+        fn render_process_handler(&self) -> Option<RenderProcessHandler> {
+            Some(DemoRenderProcessHandler::new())
         }
     }
 }

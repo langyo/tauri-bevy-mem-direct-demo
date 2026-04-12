@@ -21,17 +21,17 @@ build-panel:
 _kill-old:
     {{ _python }} scripts/kill_processes.py renderer.exe renderer demo-panel.exe demo-panel demo-panel-wry.exe demo-panel-wry
 
-dev: _kill-old build-renderer-debug _copy-renderer-debug build-panel
-    cargo run --package demo-panel
+dev mode="native": _kill-old build-renderer-debug _copy-renderer-debug build-panel
+    if ("{{mode}}" -eq "wsl") { cargo run --package demo-panel-wry } else { cargo run --package demo-panel }
 
-dev-wry: _kill-old build-renderer-debug _copy-renderer-debug build-panel
-    cargo run --package demo-panel-wry
+dev-wry:
+    just dev wsl
 
-build: build-renderer-release _copy-renderer-release build-panel
-    cargo build --package demo-panel --release
+build mode="native": build-renderer-release _copy-renderer-release build-panel
+    if ("{{mode}}" -eq "wsl") { cargo build --package demo-panel-wry --release } else { cargo build --package demo-panel --release }
 
-build-wry: build-renderer-release _copy-renderer-release build-panel
-    cargo build --package demo-panel-wry --release
+build-wry:
+    just build wsl
 
 build-renderer-debug:
     cargo build --package renderer

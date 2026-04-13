@@ -1,28 +1,9 @@
 [package]
 name = "panel"
 version = "0.1.0"
-edition = "2021"
-
-[workspace]
+edition.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[package.metadata.tairitsu.build]
-output_dir = "../../dist"
-
-[package.metadata.tairitsu.html]
-head = '<script>console.log("[sab] head script running, chrome.webview="+typeof chrome.webview);if(typeof chrome!=="undefined"&&chrome.webview){chrome.webview.addEventListener("SharedBufferReceived",function(e){console.log("[sab] SharedBufferReceived fired!",JSON.stringify(e.additionalData));if(e.additionalData&&e.additionalData.type==="frameBuffer"){var b=e.getBuffer();if(b&&typeof b.then==="function"){b.then(function(x){window.__frameSab=x;console.log("[sab] buffer set (promise), len="+x.byteLength)})}else if(b){window.__frameSab=b;console.log("[sab] buffer set (sync), len="+b.byteLength)}}});console.log("[sab] listener registered");setInterval(function(){console.log("[sab] __frameSab="+!!window.__frameSab)},3000)}else{console.log("[sab] ERROR: chrome.webview not available!")}</script>'
-
 [dependencies]
-tairitsu-vdom = { path = "../../../../celestia/tairitsu/packages/vdom" }
-tairitsu-hooks = { path = "../../../../celestia/tairitsu/packages/hooks" }
-tairitsu-macros = { path = "../../../../celestia/tairitsu/packages/macros" }
-tairitsu-style = { path = "../../../../celestia/tairitsu/packages/style" }
-tairitsu-web = { path = "../../../../celestia/tairitsu/packages/web", default-features = false, features = ["vdom", "hooks", "macros", "style", "wit-bindings", "logger"] }
-hikari-components = { path = "../../../../celestia/hikari/packages/components" }
-hikari-theme = { path = "../../../../celestia/hikari/packages/theme" }
-hikari-palette = { path = "../../../../celestia/hikari/packages/palette" }
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"

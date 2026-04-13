@@ -1,94 +1,35 @@
-"""Build the panel WASM component using tairitsu packager."""
-import re
-import shutil
-import subprocess
-import sys
+"""Build panel frontend by copying pure JS static assets to dist/."""
 import os
+import shutil
+import sys
 
 
-def find_tairitsu_root():
-    """Find the tairitsu monorepo root by walking up from the panel Cargo.toml."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir = os.path.dirname(script_dir)
-    panel_cargo = os.path.join(root_dir, "crates", "panel", "Cargo.toml")
-    if not os.path.isfile(panel_cargo):
-        return None
-
-    with open(panel_cargo, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("tairitsu-vdom"):
-                start = line.find("path = \"")
-                if start >= 0:
-                    start += len("path = \"")
-                    end = line.index("\"", start)
-                    rel = line[start:end]
-                    resolved = os.path.normpath(
-                        os.path.join(root_dir, "crates", "panel", rel)
-                    )
-                    return os.path.dirname(os.path.dirname(resolved))
-    return None
+def copy_tree(src_dir: str, dst_dir: str) -> None:
+    for root, dirs, files in os.walk(src_dir):
+        rel = os.path.relpath(root, src_dir)
+        out_root = dst_dir if rel == "." else os.path.join(dst_dir, rel)
+        os.makedirs(out_root, exist_ok=True)
+        for d in dirs:
+            os.makedirs(os.path.join(out_root, d), exist_ok=True)
+        for f in files:
+            shutil.copy2(os.path.join(root, f), os.path.join(out_root, f))
 
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(script_dir)
-    panel_dir = os.path.join(root_dir, "crates", "panel")
+    src_dir = os.path.join(root_dir, "crates", "panel", "web")
     dist_dir = os.path.join(root_dir, "dist")
 
-    ext = ".exe" if sys.platform == "win32" else ""
-    tairitsu = os.path.join(
-        panel_dir, "target", "tairitsu-tools", "bin", f"tairitsu{ext}"
-    )
-
-    if not os.path.isfile(tairitsu):
-        print(f"Error: tairitsu packager not found at {tairitsu}", file=sys.stderr)
+    if not os.path.isdir(src_dir):
+        print(f"Error: panel web assets not found at {src_dir}", file=sys.stderr)
         sys.exit(1)
 
-    env = os.environ.copy()
-    env.pop("RUSTC_WRAPPER", None)
-
-    result = subprocess.run(
-        [tairitsu, "build"],
-        cwd=panel_dir,
-        env=env,
-    )
-
-    if result.returncode != 0:
-        sys.exit(result.returncode)
-
-    wrapper_js = os.path.join(dist_dir, "component-wrapper", "panel.js")
-    if os.path.isfile(wrapper_js):
-        with open(wrapper_js, "r", encoding="utf-8") as f:
-            content = f.read()
-        original = content
-        content = re.sub(
-            r"if\s*\(!\(ret\s+instanceof\s+OutputStream\)\)\s*\{",
-            "if (ret == null || typeof ret.blockingWriteAndFlush !== 'function') {",
-            content,
-        )
-        content = re.sub(
-            r"if\s*\(!\(ret\s+instanceof\s+InputStream\)\)\s*\{",
-            "if (ret == null || typeof ret.blockingRead !== 'function') {",
-            content,
-        )
-        if content != original:
-            with open(wrapper_js, "w", encoding="utf-8") as f:
-                f.write(content)
-            print(f"Patched {wrapper_js}: replaced instanceof with duck-typing for WASI resources")
-
-    tairitsu_root = find_tairitsu_root()
-    if tairitsu_root:
-        runtime_src = os.path.join(
-            tairitsu_root,
-            "packages",
-            "browser-glue",
-            "dist",
-            "runtime.js",
-        )
-        glue_dst = os.path.join(dist_dir, "browser-glue", "__tairitsu_glue__.js")
-        if os.path.isfile(runtime_src) and os.path.isfile(glue_dst):
-            shutil.copy2(runtime_src, glue_dst)
-            print(f"Patched {glue_dst} with latest browser-glue runtime.js")
+    if os.path.isdir(dist_dir):
+        shutil.rmtree(dist_dir)
+    os.makedirs(dist_dir, exist_ok=True)
+    copy_tree(src_dir, dist_dir)
+    print(f"Panel static assets copied: {src_dir} -> {dist_dir}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,136 @@
+:root {
+  --bg-0: rgba(14, 20, 30, 0.1);
+  --bg-1: rgba(20, 30, 40, 0.55);
+  --line: rgba(255, 255, 255, 0.15);
+  --text: #f5f8ff;
+  --muted: rgba(245, 248, 255, 0.65);
+  --active: rgba(100, 180, 255, 0.85);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: linear-gradient(120deg, rgba(18, 30, 42, 0.6), rgba(35, 22, 44, 0.45));
+}
+
+#bevy-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+
+#topbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--bg-1);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+
+#brand {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+#status {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#metrics {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  font-family: Consolas, monospace;
+}
+
+#panel {
+  position: fixed;
+  right: 0;
+  top: 44px;
+  bottom: 0;
+  width: 360px;
+  z-index: 15;
+  overflow: auto;
+  padding: 12px;
+  background: rgba(24, 28, 40, 0.45);
+  border-left: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+
+.card {
+  background: rgba(30, 38, 52, 0.62);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.card h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#res-toolbar {
+  position: fixed;
+  right: 376px;
+  bottom: 12px;
+  z-index: 25;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  max-width: calc(100vw - 390px);
+}
+
+#res-toolbar button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(50, 58, 72, 0.75);
+  color: var(--text);
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 10px;
+}
+
+#res-toolbar button.active {
+  background: var(--active);
+}
+
+@media (max-width: 960px) {
+  #panel {
+    width: 250px;
+  }
+
+  #res-toolbar {
+    right: 266px;
+    max-width: calc(100vw - 280px);
+  }
+}

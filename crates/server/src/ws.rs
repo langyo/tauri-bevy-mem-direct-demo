@@ -86,13 +86,22 @@ pub async fn frame_ws_handler(
 }
 
 async fn handle_frame_socket(mut socket: WebSocket, shm: Arc<std::sync::Mutex<ShmHandle>>) {
+    tracing::info!("frame.ws client connected");
     let frame_rx = spawn_frame_reader(shm);
+    let mut sent_count: u64 = 0;
 
     while let Ok(data) = frame_rx.recv_async().await {
         if socket.send(Message::Binary(data.into())).await.is_err() {
+            tracing::info!(sent_count, "frame.ws client disconnected");
             return;
         }
+        sent_count += 1;
+        if sent_count == 1 || sent_count % 300 == 0 {
+            tracing::info!(sent_count, "frame.ws sent frames");
+        }
     }
+
+    tracing::info!(sent_count, "frame.ws sender loop ended");
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
